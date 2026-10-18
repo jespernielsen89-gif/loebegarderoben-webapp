@@ -1,7 +1,6 @@
 // === CONFIGURATION ===
 const SUPABASE_URL = "https://quxjukgjwvsuismbfaof.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable__8-ZIhx5r9eKFwblICJyNQ_Fexy6WA4";
-const OPENAI_API_KEY = "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"; // f.eks. sk-proj-...
 
 let supabaseClient = null;
 if (window.supabase && SUPABASE_URL && !SUPABASE_URL.includes("DIN_PROJECT_URL")) {
@@ -121,9 +120,9 @@ function updateMatch() {
 
   // 1. Juster for Persontype
   if (userType === 'cold') {
-    effectiveTemp -= 3; // Fryser let -> trækker grader fra, så der anbefales varmere tøj
+    effectiveTemp -= 3; // Fryser let -> trækker grader fra
   } else if (userType === 'warm') {
-    effectiveTemp += 3; // Varmblodet -> lægger grader til, så der anbefales lettere tøj
+    effectiveTemp += 3; // Varmblodet -> lægger grader til
   }
 
   // 2. Juster for Rutens Karakter & Intensitet
@@ -166,56 +165,39 @@ function generateOutfitMatch(adjustedTemp, needWindproof) {
   outfitBox.classList.remove('hidden');
 }
 
-// === 4. AI CAMERA SCANNER (OPENAI GPT-4o VISION) ===
+// === 4. AI CAMERA SCANNER (VIA SUPABASE EDGE FUNCTION: bright-endpoint) ===
 if (cameraInput) {
   cameraInput.addEventListener('change', async (e) => {
     const file = e.target.files[0];
     if (!file) return;
-
-    if (!OPENAI_API_KEY || OPENAI_API_KEY.includes("DIN_OPENAI_API_KEY")) {
-      scanStatus.innerText = "⚠️ Indsæt venligst din OpenAI API-nøgle i app.js for at scanne.";
-      return;
-    }
 
     scanStatus.innerText = "⏳ Analyserer tøj med AI...";
 
     try {
       const base64Image = await convertToBase64(file);
 
-      const response = await fetch("https://api.openai.com/v1/chat/completions", {
+      // Kalder din sikre Supabase Edge Function
+      const response = await fetch(`${SUPABASE_URL}/functions/v1/bright-endpoint`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "Authorization": `Bearer ${OPENAI_API_KEY}`
+          "Authorization": `Bearer ${SUPABASE_ANON_KEY}`
         },
-        body: JSON.stringify({
-          model: "gpt-4o",
-          messages: [
-            {
-              role: "user",
-              content: [
-                {
-                  type: "text",
-                  text: "Analysér dette løbetøj og returnér KUN et gyldigt JSON-objekt uden markdown-formatering eller ekstra tekst med felterne: brand, category (overdel/underdel/tilbehoer), subCategory (f.eks. T-shirt, Jakke, Tights), warmthLevel (tal 1-5), windproof (true/false), visibilityReflective (true/false)."
-                },
-                {
-                  type: "image_url",
-                  image_url: { url: base64Image }
-                }
-              ]
-            }
-          ],
-          max_tokens: 300
-        })
+        body: JSON.stringify({ imageBase64: base64Image })
       });
 
       const aiData = await response.json();
       
       if (aiData.error) {
-        throw new Error(aiData.error.message || "OpenAI API fejl");
+        throw new Error(aiData.error.message || aiData.error);
       }
 
-      const rawContent = aiData.choices[0].message.content.trim().replace(/```json|```/g, "");
+      let messageContent = aiData.choices && aiData.choices[0] ? aiData.choices[0].message.content : null;
+      if (!messageContent) {
+        throw new Error("Ugyldigt svar fra AI-tjenesten.");
+      }
+
+      const rawContent = messageContent.trim().replace(/```json|```/g, "");
       const parsedItem = JSON.parse(rawContent);
 
       scanStatus.innerText = `✅ AI fandt: ${parsedItem.brand || 'Tøj'} (${parsedItem.subCategory || 'Løbetøj'}). Gemmer...`;
@@ -233,13 +215,11 @@ if (cameraInput) {
         if (error) throw error;
         scanStatus.innerText = `🎉 Gemt! ${parsedItem.brand || 'Tøjet'} ligger nu i dit klædeskab.`;
         loadWardrobe();
-      } else {
-        scanStatus.innerText = `✅ Analyseret! (${parsedItem.brand} - ${parsedItem.subCategory}). Indsæt Supabase-nøgler for at gemme permanent.`;
       }
 
     } catch (err) {
       console.error("AI Scan fejl:", err);
-      scanStatus.innerText = "❌ Fejl under scanning. Tjek konsollen (F12) eller din OpenAI API-nøgle.";
+      scanStatus.innerText = "❌ Fejl under scanning: " + err.message;
     }
   });
 }
