@@ -11,7 +11,6 @@ if (window.supabase && SUPABASE_URL && !SUPABASE_URL.includes("DIN_PROJECT_URL")
 
 // === ELEMENTS ===
 const btnLocation = document.getElementById('btn-location');
-const btnScan = document.getElementById('btn-scan');
 const cameraInput = document.getElementById('camera-input');
 const weatherInfo = document.getElementById('weather-info');
 const outfitBox = document.getElementById('outfit-recommendation');
@@ -129,11 +128,7 @@ function generateOutfitMatch(feelsLikeTemp) {
 }
 
 // === 4. AI CAMERA SCANNER (OPENAI GPT-4o VISION) ===
-if (btnScan && cameraInput) {
-  btnScan.addEventListener('click', () => {
-    cameraInput.click();
-  });
-
+if (cameraInput) {
   cameraInput.addEventListener('change', async (e) => {
     const file = e.target.files[0];
     if (!file) return;
