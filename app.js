@@ -24,7 +24,32 @@ const routeTypeSelect = document.getElementById('route-type');
 if (userTypeSelect) userTypeSelect.addEventListener('change', updateMatch);
 if (routeTypeSelect) routeTypeSelect.addEventListener('change', updateMatch);
 
-document.addEventListener('DOMContentLoaded', loadWardrobe);
+// === AUTOMATISK ANONYM LOGIN ===
+async function ensureAuthenticated() {
+  if (!supabaseClient) return;
+  
+  try {
+    const { data: { session } } = await supabaseClient.auth.getSession();
+    if (!session) {
+      console.log("Ingen eksisterende session. Opretter anonym bruger...");
+      const { data, error } = await supabaseClient.auth.signInAnonymously();
+      if (error) {
+        console.error("Anonym login fejl:", error);
+      } else {
+        console.log("Anonym bruger oprettet succesfuldt:", data.user?.id);
+      }
+    } else {
+      console.log("Eksisterende session fundet for bruger:", session.user.id);
+    }
+  } catch (err) {
+    console.error("Autentificeringsfejl:", err);
+  }
+}
+
+document.addEventListener('DOMContentLoaded', async () => {
+  await ensureAuthenticated();
+  loadWardrobe();
+});
 
 // === 1. HENT KLÆDESKAB FRA SUPABASE ===
 async function loadWardrobe() {
@@ -120,20 +145,20 @@ function updateMatch() {
 
   // 1. Juster for Persontype
   if (userType === 'cold') {
-    effectiveTemp -= 3; // Fryser let -> trækker grader fra
+    effectiveTemp -= 3;
   } else if (userType === 'warm') {
-    effectiveTemp += 3; // Varmblodet -> lægger grader til
+    effectiveTemp += 3;
   }
 
   // 2. Juster for Rutens Karakter & Intensitet
   let needWindproof = false;
   if (routeType === 'intense') {
-    effectiveTemp += 2; // Høj puls genererer mere kropsvarme
+    effectiveTemp += 2;
   } else if (routeType === 'windy') {
     needWindproof = true;
-    effectiveTemp -= 1; // Ekstra vindafkøling
+    effectiveTemp -= 1;
   } else if (routeType === 'sheltered') {
-    effectiveTemp += 1; // Læ i skoven
+    effectiveTemp += 1;
   }
 
   generateOutfitMatch(effectiveTemp, needWindproof);
@@ -174,6 +199,9 @@ if (cameraInput) {
     scanStatus.innerText = "⏳ Analyserer tøj med AI...";
 
     try {
+      // Sørg for at vi er logget ind før scanning
+      await ensureAuthenticated();
+
       const base64Image = await convertToBase64(file);
 
       // Kalder din sikre Supabase Edge Function
