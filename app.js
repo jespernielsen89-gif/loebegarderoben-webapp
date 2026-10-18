@@ -1,7 +1,7 @@
 // === CONFIGURATION ===
 // Indsæt dine Supabase-oplysninger fra Step 1 herunder
-const SUPABASE_URL = "https://DIN_PROJECT_URL.supabase.co";
-const SUPABASE_ANON_KEY = "DIN_ANON_PUBLIC_KEY";
+const SUPABASE_URL = https://quxjukgjwvsuismbfaof.supabase.co;
+const SUPABASE_ANON_KEY = sb_publishable__8-ZIhx5r9eKFwblICJyNQ_Fexy6WA4;
 
 // Initialisér Supabase-klienten (hvis nøglerne er indsat)
 let supabase = null;
