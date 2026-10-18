@@ -3,7 +3,7 @@ const SUPABASE_URL = "https://quxjukgjwvsuismbfaof.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable__8-ZIhx5r9eKFwblICJyNQ_Fexy6WA4";
 const OPENAI_API_KEY = "INDSÆT_DIN_OPENAI_API_KEY_HER"; // f.eks. sk-proj-...
 
-// Initialisér Supabase-klienten (omdøbt til supabaseClient for at undgå navnekollision)
+// Initialisér Supabase-klienten
 let supabaseClient = null;
 if (window.supabase && SUPABASE_URL && !SUPABASE_URL.includes("DIN_PROJECT_URL")) {
   supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
