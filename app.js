@@ -26,23 +26,26 @@ if (routeTypeSelect) routeTypeSelect.addEventListener('change', updateMatch);
 
 // === AUTOMATISK ANONYM LOGIN ===
 async function ensureAuthenticated() {
-  if (!supabaseClient) return;
+  if (!supabaseClient) return null;
   
   try {
-    const { data: { session } } = await supabaseClient.auth.getSession();
+    let { data: { session } } = await supabaseClient.auth.getSession();
     if (!session) {
       console.log("Ingen eksisterende session. Opretter anonym bruger...");
       const { data, error } = await supabaseClient.auth.signInAnonymously();
       if (error) {
         console.error("Anonym login fejl:", error);
-      } else {
-        console.log("Anonym bruger oprettet succesfuldt:", data.user?.id);
+        return null;
       }
+      console.log("Anonym bruger oprettet succesfuldt:", data.user?.id);
+      return data.user;
     } else {
       console.log("Eksisterende session fundet for bruger:", session.user.id);
+      return session.user;
     }
   } catch (err) {
     console.error("Autentificeringsfejl:", err);
+    return null;
   }
 }
 
@@ -199,8 +202,11 @@ if (cameraInput) {
     scanStatus.innerText = "⏳ Analyserer tøj med AI...";
 
     try {
-      // Sørg for at vi er logget ind før scanning
-      await ensureAuthenticated();
+      // Sikr at vi har en aktiv anonym bruger og hents bruger-ID
+      const currentUser = await ensureAuthenticated();
+      if (!currentUser) {
+        throw new Error("Kunne ikke verificere den anonyme session.");
+      }
 
       const base64Image = await convertToBase64(file);
 
@@ -231,7 +237,9 @@ if (cameraInput) {
       scanStatus.innerText = `✅ AI fandt: ${parsedItem.brand || 'Tøj'} (${parsedItem.subCategory || 'Løbetøj'}). Gemmer...`;
 
       if (supabaseClient) {
+        // Eksplicit inkludering af user_id
         const { error } = await supabaseClient.from('user_wardrobe').insert([{
+          user_id: currentUser.id,
           brand: parsedItem.brand || "Ukendt",
           category: parsedItem.category || "overdel",
           sub_category: parsedItem.subCategory || "Løbetøj",
