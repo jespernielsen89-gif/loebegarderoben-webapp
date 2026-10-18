@@ -166,7 +166,7 @@ if (btnScan && cameraInput) {
                 },
                 {
                   type: "image_url",
-                  image_url": { url: base64Image }
+                  image_url: { url: base64Image }
                 }
               ]
             }
