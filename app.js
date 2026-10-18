@@ -3,11 +3,13 @@ const SUPABASE_URL = "https://quxjukgjwvsuismbfaof.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable__8-ZIhx5r9eKFwblICJyNQ_Fexy6WA4";
 const OPENAI_API_KEY = "INDSÆT_DIN_OPENAI_API_KEY_HER"; // f.eks. sk-proj-...
 
-// Initialisér Supabase-klienten
 let supabaseClient = null;
 if (window.supabase && SUPABASE_URL && !SUPABASE_URL.includes("DIN_PROJECT_URL")) {
   supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 }
+
+// Global variabel til opbevaring af seneste vejrdata
+let currentRawTemp = null;
 
 // === ELEMENTS ===
 const btnLocation = document.getElementById('btn-location');
@@ -16,8 +18,13 @@ const weatherInfo = document.getElementById('weather-info');
 const outfitBox = document.getElementById('outfit-recommendation');
 const scanStatus = document.getElementById('scan-status');
 const wardrobeList = document.getElementById('wardrobe-list');
+const userTypeSelect = document.getElementById('user-type');
+const routeTypeSelect = document.getElementById('route-type');
 
-// Hent klædeskab ved opstart
+// Event listeners til parametre
+if (userTypeSelect) userTypeSelect.addEventListener('change', updateMatch);
+if (routeTypeSelect) routeTypeSelect.addEventListener('change', updateMatch);
+
 document.addEventListener('DOMContentLoaded', loadWardrobe);
 
 // === 1. HENT KLÆDESKAB FRA SUPABASE ===
@@ -58,7 +65,7 @@ async function loadWardrobe() {
     });
   } catch (err) {
     console.error("Fejl ved hentning af klædeskab:", err);
-    wardrobeList.innerHTML = '<p class="empty-msg">❌ Kunne ikke hente tøj. Tjek dine Supabase-nøgler og tabelnavn.</p>';
+    wardrobeList.innerHTML = '<p class="empty-msg">❌ Kunne ikke hente tøj. Tjek dine Supabase-nøgler.</p>';
   }
 }
 
@@ -88,6 +95,8 @@ async function fetchWeather(position) {
     const data = await res.json();
     const current = data.current;
 
+    currentRawTemp = current.apparent_temperature;
+
     document.getElementById('temp').innerText = Math.round(current.temperature_2m);
     document.getElementById('feels-like').innerText = Math.round(current.apparent_temperature);
     document.getElementById('wind').innerText = Math.round(current.wind_speed_10m);
@@ -95,27 +104,57 @@ async function fetchWeather(position) {
     weatherInfo.classList.remove('hidden');
     btnLocation.innerText = "🔄 Opdater vejr";
 
-    generateOutfitMatch(current.apparent_temperature);
+    updateMatch();
   } catch (err) {
     console.error("Fejl ved hentning af vejr:", err);
     alert("Der opstod en fejl under hentning af vejrdata.");
   }
 }
 
-// === 3. OUTFIT MATCHING LOGIK ===
-function generateOutfitMatch(feelsLikeTemp) {
+// === 3. DE 3 PARAMETRE: VEJR + PERSON + RUTE ALGORITME ===
+function updateMatch() {
+  if (currentRawTemp === null) return;
+
+  let effectiveTemp = currentRawTemp;
+  const userType = userTypeSelect ? userTypeSelect.value : 'normal';
+  const routeType = routeTypeSelect ? routeTypeSelect.value : 'standard';
+
+  // 1. Juster for Persontype
+  if (userType === 'cold') {
+    effectiveTemp -= 3; // Fryser let -> trækker grader fra, så der anbefales varmere tøj
+  } else if (userType === 'warm') {
+    effectiveTemp += 3; // Varmblodet -> lægger grader til, så der anbefales lettere tøj
+  }
+
+  // 2. Juster for Rutens Karakter & Intensitet
+  let needWindproof = false;
+  if (routeType === 'intense') {
+    effectiveTemp += 2; // Høj puls genererer mere kropsvarme
+  } else if (routeType === 'windy') {
+    needWindproof = true;
+    effectiveTemp -= 1; // Ekstra vindafkøling
+  } else if (routeType === 'sheltered') {
+    effectiveTemp += 1; // Læ i skoven
+  }
+
+  generateOutfitMatch(effectiveTemp, needWindproof);
+}
+
+function generateOutfitMatch(adjustedTemp, needWindproof) {
   const outfitList = document.getElementById('outfit-list');
   if (!outfitList) return;
   
   outfitList.innerHTML = '';
 
   let items = [];
-  if (feelsLikeTemp < 5) {
-    items = ["Lange Tights (Vinter)", "Langærmet Uldtrøje", "Vindtæt Løbejakke", "Handsker & Pandelampe"];
-  } else if (feelsLikeTemp < 12) {
-    items = ["Lange Tights (Mellem)", "Langærmet Løbetrøje", "Vindvest"];
+  if (adjustedTemp < 3) {
+    items = ["Lange Vintertights", "Langærmet Uldtrøje", "Vindtæt Løbejakke", "Handsker & Hue"];
+  } else if (adjustedTemp < 10) {
+    items = ["Lange Tights", "Langærmet Løbetrøje", needWindproof ? "Vindvest (Obligatorisk på åben rute)" : "Lethovedet Løbevest/Jakke"];
+  } else if (adjustedTemp < 16) {
+    items = ["Korte Tights / Shorts", "Langærmet tynd trøje eller T-shirt med ærmevarmere"];
   } else {
-    items = ["Korte Tights / Shorts", "Kortærmet T-shirt / Singlet"];
+    items = ["Shorts", "Kortærmet Singlet / T-shirt"];
   }
 
   items.forEach(item => {
