@@ -4,46 +4,51 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>LøbeGarderoben</title>
-  <link rel="stylesheet" href="styles.css">
-  <!-- Supabase JS Library -->
+  <link rel="stylesheet" href="style.css">
+  <!-- Supabase CDN -->
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
 <body>
-  <div class="app-container">
+  <div class="container">
     <header>
-      <h1>🏃‍♀️ LøbeGarderoben</h1>
+      <h1>🏃 LøbeGarderoben</h1>
       <p>Din AI-drevne løbeassistent</p>
     </header>
 
-    <!-- VEJR & OUTFIT KORT -->
-    <section class="card weather-card">
+    <!-- Vejr og Match -->
+    <section class="card">
       <h2>Dagens Vejr & Match</h2>
-      <button id="btn-location" class="btn-primary">📍 Brug min GPS til vejr</button>
+      <button id="btn-location" class="action-btn">📍 Brug min GPS til vejr</button>
       
-      <div id="weather-info" class="weather-info hidden">
-        <p><strong>Temperatur:</strong> <span id="temp">--</span>°C (Føles som <span id="feels-like">--</span>°C)</p>
-        <p><strong>Vindstød:</strong> <span id="wind">--</span> m/s</p>
+      <div id="weather-info" class="hidden">
+        <p>Temperatur: <span id="temp">--</span>°C (Føles som: <span id="feels-like">--</span>°C)</p>
+        <p>Vind: <span id="wind">--</span> m/s</p>
       </div>
 
-      <div id="outfit-recommendation" class="outfit-box hidden">
-        <h3>💡 Dagens Anbefalede Outfit</h3>
+      <div id="outfit-recommendation" class="hidden">
+        <h3>Anbefalet Outfit:</h3>
         <ul id="outfit-list"></ul>
       </div>
     </section>
 
-    <!-- AI CAMERA SCANNER -->
-    <section class="card scan-card">
-      <h2>📷 Scan nyt løbetøj</h2>
-      <p>Tag et billede af dit tøj – AI'en identificerer mærke og isoleringsevne automatisk.</p>
+    <!-- Scan nyt tøj -->
+    <section class="card">
+      <h3>📸 Scan nyt løbetøj</h3>
+      <p>Tag et billede af dit tøj – AI'en identificerer mærke og egenskaber automatisk.</p>
+      
+      <!-- Label fungerer direkte som knap på tværs af mobiler og PC -->
+      <label for="camera-input" class="action-btn scan-btn-label" style="display: block; text-align: center; cursor: pointer; background-color: #10b981; color: white; padding: 12px; border-radius: 8px; font-weight: bold; margin-top: 10px;">
+        📷 Åbn Kamera / Vælg Billede
+      </label>
       <input type="file" id="camera-input" accept="image/*" capture="environment" style="display: none;">
-      <button id="btn-scan" class="btn-secondary">📸 Åbn Kamera / Vælg Billede</button>
-      <div id="scan-status" class="status-msg"></div>
+      
+      <p id="scan-status" style="margin-top: 10px; font-size: 14px; color: #555;"></p>
     </section>
 
-    <!-- MIT KLÆDESKAB -->
-    <section class="card wardrobe-card">
-      <h2>🧥 Mit Klædeskab</h2>
-      <div id="wardrobe-list" class="wardrobe-grid">
+    <!-- Mit Klædeskab -->
+    <section class="card">
+      <h3>👕 Mit Klædeskab</h3>
+      <div id="wardrobe-list">
         <p class="empty-msg">Henter tøj fra databasen...</p>
       </div>
     </section>
