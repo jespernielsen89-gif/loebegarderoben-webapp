@@ -1,7 +1,7 @@
 // === CONFIGURATION ===
 const SUPABASE_URL = "https://quxjukgjwvsuismbfaof.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable__8-ZIhx5r9eKFwblICJyNQ_Fexy6WA4";
-const OPENAI_API_KEY = "INDSÆT_DIN_OPENAI_API_KEY_HER"; // f.eks. sk-proj-...
+const OPENAI_API_KEY = "org-RwebG4muzto3O7dGcXRKgend"; // f.eks. sk-proj-...
 
 let supabaseClient = null;
 if (window.supabase && SUPABASE_URL && !SUPABASE_URL.includes("DIN_PROJECT_URL")) {
