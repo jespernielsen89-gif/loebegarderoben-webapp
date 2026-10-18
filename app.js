@@ -7,10 +7,14 @@ if (window.supabase && SUPABASE_URL && !SUPABASE_URL.includes("DIN_PROJECT_URL")
   supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 }
 
-// Global variabel til opbevaring af seneste vejrdata
+// Globale variabler
 let currentRawTemp = null;
+let currentWindSpeed = 0;
+let currentRain = 0;
+let userWardrobeItems = [];
+let lastInsertedFeedbackId = null;
 
-// === ELEMENTS ===
+// DOM Elements
 const btnLocation = document.getElementById('btn-location');
 const cameraInput = document.getElementById('camera-input');
 const weatherInfo = document.getElementById('weather-info');
@@ -20,31 +24,25 @@ const wardrobeList = document.getElementById('wardrobe-list');
 const userTypeSelect = document.getElementById('user-type');
 const routeTypeSelect = document.getElementById('route-type');
 
-// Event listeners til parametre
 if (userTypeSelect) userTypeSelect.addEventListener('change', updateMatch);
 if (routeTypeSelect) routeTypeSelect.addEventListener('change', updateMatch);
 
-// === AUTOMATISK ANONYM LOGIN ===
+// === AUTHENTICATION ===
 async function ensureAuthenticated() {
   if (!supabaseClient) return null;
-  
   try {
     let { data: { session } } = await supabaseClient.auth.getSession();
     if (!session) {
-      console.log("Ingen eksisterende session. Opretter anonym bruger...");
       const { data, error } = await supabaseClient.auth.signInAnonymously();
       if (error) {
         console.error("Anonym login fejl:", error);
         return null;
       }
-      console.log("Anonym bruger oprettet succesfuldt:", data.user?.id);
       return data.user;
-    } else {
-      console.log("Eksisterende session fundet for bruger:", session.user.id);
-      return session.user;
     }
+    return session.user;
   } catch (err) {
-    console.error("Autentificeringsfejl:", err);
+    console.error("Auth-fejl:", err);
     return null;
   }
 }
@@ -54,16 +52,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   loadWardrobe();
 });
 
-// === 1. HENT KLÆDESKAB FRA SUPABASE ===
+// === 1. HENT KLÆDESKAB MED DELETE OPTION ===
 async function loadWardrobe() {
-  if (!wardrobeList) return;
+  if (!wardrobeList || !supabaseClient) return;
 
-  if (!supabaseClient) {
-    wardrobeList.innerHTML = '<p class="empty-msg">⚠️ Indsæt dine Supabase-nøgler i app.js for at hente dit klædeskab.</p>';
-    return;
-  }
-
-  wardrobeList.innerHTML = '<p class="empty-msg">Henter tøj fra databasen...</p>';
+  wardrobeList.innerHTML = '<p class="empty-msg">Henter tøj fra dit digitale klædeskab...</p>';
 
   try {
     const { data, error } = await supabaseClient
@@ -72,41 +65,68 @@ async function loadWardrobe() {
       .order('created_at', { ascending: false });
 
     if (error) throw error;
+    userWardrobeItems = data || [];
 
-    if (!data || data.length === 0) {
-      wardrobeList.innerHTML = '<p class="empty-msg">Dit klædeskab er tomt. Scan dit første stykke tøj!</p>';
+    if (userWardrobeItems.length === 0) {
+      wardrobeList.innerHTML = '<p class="empty-msg">Dit klædeskab er tomt. Scan dit første stykke tøj ovenfor! 📸</p>';
+      if (currentRawTemp !== null) updateMatch();
       return;
     }
 
     wardrobeList.innerHTML = '';
-    data.forEach(item => {
+    userWardrobeItems.forEach(item => {
       const card = document.createElement('div');
-      card.className = 'wardrobe-item';
-      const warmth = item.warmth_level ? '🔥'.repeat(item.warmth_level) : '🔥';
+      card.className = 'wardrobe-card';
+      
+      const warmthStars = '🔥'.repeat(item.warmth_level || 1);
+      const windBadge = item.windproof ? '<span class="tag tag-blue">💨 Vindtæt</span>' : '';
+      const rainBadge = item.waterproof || (item.sub_category && item.sub_category.toLowerCase().includes('regn')) ? '<span class="tag tag-blue">🌧️ Vandafvisende</span>' : '';
+
       card.innerHTML = `
-        <strong>${item.brand || 'Ukendt mærke'}</strong><br>
-        <small>${item.sub_category || item.category || 'Tøj'}</small><br>
-        <span>Varme: ${warmth}</span>
+        <div class="wardrobe-card-header">
+          <strong>${item.brand || 'Ukendt mærke'}</strong>
+          <button class="btn-delete" onclick="deleteWardrobeItem('${item.id}')">🗑️</button>
+        </div>
+        <p class="category-title">${item.sub_category || item.category || 'Tøj'}</p>
+        <div class="tags-row">
+          <span class="tag tag-orange">${warmthStars}</span>
+          ${windBadge}
+          ${rainBadge}
+        </div>
       `;
       wardrobeList.appendChild(card);
     });
+
+    if (currentRawTemp !== null) updateMatch();
+
   } catch (err) {
     console.error("Fejl ved hentning af klædeskab:", err);
-    wardrobeList.innerHTML = '<p class="empty-msg">❌ Kunne ikke hente tøj. Tjek dine Supabase-nøgler.</p>';
+    wardrobeList.innerHTML = '<p class="empty-msg">❌ Kunne ikke hente klædeskab.</p>';
   }
 }
 
-// === 2. LOKALT VEJR VIA OPEN-METEO API ===
+async function deleteWardrobeItem(id) {
+  if (!confirm("Vil du slette dette stykke tøj fra dit klædeskab?")) return;
+  try {
+    const { error } = await supabaseClient.from('user_wardrobe').delete().eq('id', id);
+    if (error) throw error;
+    loadWardrobe();
+  } catch (err) {
+    alert("Kunne ikke slette genstanden.");
+  }
+}
+
+// === 2. AVANCERET VEJR-HENTNING ===
 if (btnLocation) {
   btnLocation.addEventListener('click', () => {
     if (navigator.geolocation) {
-      btnLocation.innerText = "Søger placering...";
+      btnLocation.innerText = "⏳ Henter GPS og vejrdata...";
       navigator.geolocation.getCurrentPosition(fetchWeather, (err) => {
-        alert("Kunne ikke hente placering. Tjek at GPS/placering er tilladt i din browser.");
-        btnLocation.innerText = "📍 Brug min GPS til vejr";
+        alert("Kunne ikke hente din placering.");
+        btnLocation.innerText = "📍 Hent lokalt vejr via GPS";
       });
     } else {
-      alert("GPS understøttes ikke af din browser.");
+      alert("GPS understøttes ikke i denne browser.");
     }
   });
 }
@@ -114,8 +134,7 @@ if (btnLocation) {
 async function fetchWeather(position) {
   const lat = position.coords.latitude;
   const lon = position.coords.longitude;
-
-  const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,apparent_temperature,wind_speed_10m&timezone=auto`;
+  const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,apparent_temperature,wind_speed_10m,rain&timezone=auto`;
 
   try {
     const res = await fetch(url);
@@ -123,22 +142,30 @@ async function fetchWeather(position) {
     const current = data.current;
 
     currentRawTemp = current.apparent_temperature;
+    currentWindSpeed = current.wind_speed_10m;
+    currentRain = current.rain || 0;
 
-    document.getElementById('temp').innerText = Math.round(current.temperature_2m);
-    document.getElementById('feels-like').innerText = Math.round(current.apparent_temperature);
-    document.getElementById('wind').innerText = Math.round(current.wind_speed_10m);
+    const tempEl = document.getElementById('temp');
+    const feelsEl = document.getElementById('feels-like');
+    const windEl = document.getElementById('wind');
+    const rainEl = document.getElementById('rain');
 
-    weatherInfo.classList.remove('hidden');
+    if (tempEl) tempEl.innerText = Math.round(current.temperature_2m);
+    if (feelsEl) feelsEl.innerText = Math.round(current.apparent_temperature);
+    if (windEl) windEl.innerText = Math.round(currentWindSpeed);
+    if (rainEl) rainEl.innerText = currentRain;
+
+    if (weatherInfo) weatherInfo.classList.remove('hidden');
     btnLocation.innerText = "🔄 Opdater vejr";
 
     updateMatch();
   } catch (err) {
-    console.error("Fejl ved hentning af vejr:", err);
-    alert("Der opstod en fejl under hentning af vejrdata.");
+    console.error("Vejrfejl:", err);
+    alert("Kunne ikke hente vejrdata.");
   }
 }
 
-// === 3. DE 3 PARAMETRE: VEJR + PERSON + RUTE ALGORITME ===
+// === 3. INTELLIGENT LAG-PÅ-LAG ALGORITME MED UNIQUES (Undgår dubletter) ===
 function updateMatch() {
   if (currentRawTemp === null) return;
 
@@ -146,71 +173,140 @@ function updateMatch() {
   const userType = userTypeSelect ? userTypeSelect.value : 'normal';
   const routeType = routeTypeSelect ? routeTypeSelect.value : 'standard';
 
-  // 1. Juster for Persontype
-  if (userType === 'cold') {
-    effectiveTemp -= 3;
-  } else if (userType === 'warm') {
-    effectiveTemp += 3;
-  }
+  if (userType === 'cold') effectiveTemp -= 3;
+  else if (userType === 'warm') effectiveTemp += 3;
 
-  // 2. Juster for Rutens Karakter & Intensitet
-  let needWindproof = false;
-  if (routeType === 'intense') {
-    effectiveTemp += 2;
-  } else if (routeType === 'windy') {
-    needWindproof = true;
-    effectiveTemp -= 1;
-  } else if (routeType === 'sheltered') {
-    effectiveTemp += 1;
-  }
+  let needWindproof = currentWindSpeed > 7.0 || routeType === 'windy';
+  let needRainproof = currentRain > 0.1;
 
-  generateOutfitMatch(effectiveTemp, needWindproof);
+  if (routeType === 'intense') effectiveTemp += 2;
+  else if (routeType === 'sheltered') effectiveTemp += 1;
+
+  generateOutfitMatch(effectiveTemp, needWindproof, needRainproof);
 }
 
-function generateOutfitMatch(adjustedTemp, needWindproof) {
+function generateOutfitMatch(adjustedTemp, needWindproof, needRainproof) {
   const outfitList = document.getElementById('outfit-list');
   if (!outfitList) return;
-  
   outfitList.innerHTML = '';
 
-  let items = [];
-  if (adjustedTemp < 3) {
-    items = ["Lange Vintertights", "Langærmet Uldtrøje", "Vindtæt Løbejakke", "Handsker & Hue"];
-  } else if (adjustedTemp < 10) {
-    items = ["Lange Tights", "Langærmet Løbetrøje", needWindproof ? "Vindvest (Obligatorisk på åben rute)" : "Lethovedet Løbevest/Jakke"];
-  } else if (adjustedTemp < 16) {
-    items = ["Korte Tights / Shorts", "Langærmet tynd trøje eller T-shirt med ærmevarmere"];
-  } else {
-    items = ["Shorts", "Kortærmet Singlet / T-shirt"];
+  let targetWarmth = 3;
+  if (adjustedTemp < 0) targetWarmth = 5;
+  else if (adjustedTemp < 6) targetWarmth = 4;
+  else if (adjustedTemp < 12) targetWarmth = 3;
+  else if (adjustedTemp < 18) targetWarmth = 2;
+  else targetWarmth = 1;
+
+  // Hold styr på hvilke tøj-ID'er der allerede er brugt i outfit'et
+  let usedItemIds = new Set();
+
+  const layers = [];
+  layers.push({ layerName: 'Inderlag (Baselayer)', category: 'overdel', warmth: Math.min(targetWarmth, 3) });
+
+  if (adjustedTemp < 6) {
+    layers.push({ layerName: 'Mellemlag (Isolerende)', category: 'overdel', warmth: 4 });
   }
 
-  items.forEach(item => {
-    const li = document.createElement('li');
-    li.innerText = item;
-    outfitList.appendChild(li);
+  if (needWindproof || needRainproof || adjustedTemp < 10) {
+    layers.push({ layerName: 'Yderlag (Beskyttelse)', category: 'overdel', needWind: needWindproof, needRain: needRainproof });
+  }
+
+  layers.push({ layerName: 'Ben / Underdel', category: 'underdel', warmth: targetWarmth });
+
+  if (adjustedTemp < 8) {
+    layers.push({ layerName: 'Tilbehør', category: 'tilbehør', warmth: targetWarmth });
+  }
+
+  layers.forEach(layer => {
+    // Sender usedItemIds med ind, så vi ikke genbruger det samme stykke tøj
+    const matchedItem = findBestMatch(layer.category, layer.warmth || targetWarmth, layer.needWind, layer.needRain, usedItemIds);
+    
+    if (matchedItem) {
+      usedItemIds.add(matchedItem.id); // Lås stykke tøj så det ikke bruges igen
+    }
+
+    const card = document.createElement('div');
+    card.className = 'outfit-card';
+
+    if (matchedItem) {
+      card.innerHTML = `
+        <div class="outfit-card-header">
+          <span class="layer-badge">${layer.layerName}</span>
+          <span class="match-badge">⭐ Dit tøj</span>
+        </div>
+        <h4>${matchedItem.brand} - ${matchedItem.sub_category || matchedItem.category}</h4>
+        <div class="tags-row">
+          <span class="tag tag-orange">🔥 Varme ${matchedItem.warmth_level}/5</span>
+          ${matchedItem.windproof ? '<span class="tag tag-blue">💨 Vindtæt</span>' : ''}
+        </div>
+      `;
+    } else {
+      card.innerHTML = `
+        <div class="outfit-card-header">
+          <span class="layer-badge">${layer.layerName}</span>
+          <span class="match-badge fallback">💡 Forslag</span>
+        </div>
+        <h4>${getGenericFallback(layer.layerName, targetWarmth, needWindproof, needRainproof)}</h4>
+      `;
+    }
+
+    outfitList.appendChild(card);
   });
 
   outfitBox.classList.remove('hidden');
 }
 
-// === 4. AI CAMERA SCANNER (VIA SUPABASE EDGE FUNCTION: bright-endpoint) ===
+function findBestMatch(category, targetWarmth, needWind, needRain, usedItemIds) {
+  if (!userWardrobeItems || userWardrobeItems.length === 0) return null;
+
+  let candidates = userWardrobeItems.filter(item => 
+    item.category && item.category.toLowerCase().includes(category) && !usedItemIds.has(item.id)
+  );
+
+  if (candidates.length === 0) return null;
+
+  if (needWind) {
+    const windCandidates = candidates.filter(i => i.windproof);
+    if (windCandidates.length > 0) candidates = windCandidates;
+  }
+
+  candidates.sort((a, b) => {
+    const diffA = Math.abs((a.warmth_level || 3) - targetWarmth);
+    const diffB = Math.abs((b.warmth_level || 3) - targetWarmth);
+    return diffA - diffB;
+  });
+
+  return candidates[0];
+}
+
+function getGenericFallback(layerName, warmth, wind, rain) {
+  if (rain) return "Vandtæt løbejakke / Regnjakke";
+  if (wind && layerName.includes('Yderlag')) return "Vindtæt løbejakke / Vindvest";
+  if (layerName.includes('Baselayer')) {
+    return warmth >= 3 ? "Langærmet svedtransporterende undertrøje" : "Kortærmet T-shirt / Løbesinglet";
+  }
+  if (layerName.includes('Mellemlag')) return "Løbetrøje med fleece eller zip-neck";
+  if (layerName.includes('Underdel')) return warmth >= 4 ? "Vintertights med vindfront" : (warmth >= 3 ? "Lange Løbetights" : "Korte Tights / Shorts");
+  return "Løbehandsker / Pandebånd";
+}
+
+// === 4. AI CAMERA SCANNER MED BILLED-KOMPRIMERING (IPHONE FIX) ===
 if (cameraInput) {
   cameraInput.addEventListener('change', async (e) => {
     const file = e.target.files[0];
     if (!file) return;
 
-    scanStatus.innerText = "⏳ Analyserer tøj med AI...";
+    scanStatus.innerText = "⏳ Behandler og komprimerer billede...";
 
     try {
-      // Sikr at vi har en aktiv anonym bruger og hents bruger-ID
       const currentUser = await ensureAuthenticated();
-      if (!currentUser) {
-        throw new Error("Kunne ikke verificere den anonyme session.");
-      }
+      if (!currentUser) throw new Error("Kunne ikke godkende bruger til scanning.");
 
-      const base64Image = await convertToBase64(file);
+      // Komprimerer og konverterer billedet, så det ikke fejler på store iPhone-filer
+      const base64Image = await resizeAndConvertImage(file);
 
-      // Kalder din sikre Supabase Edge Function
+      scanStatus.innerText = "⏳ AI scanner tøjet...";
+
       const response = await fetch(`${SUPABASE_URL}/functions/v1/bright-endpoint`, {
         method: "POST",
         headers: {
@@ -221,23 +317,17 @@ if (cameraInput) {
       });
 
       const aiData = await response.json();
-      
-      if (aiData.error) {
-        throw new Error(aiData.error.message || aiData.error);
-      }
+      if (aiData.error) throw new Error(aiData.error.message || aiData.error);
 
       let messageContent = aiData.choices && aiData.choices[0] ? aiData.choices[0].message.content : null;
-      if (!messageContent) {
-        throw new Error("Ugyldigt svar fra AI-tjenesten.");
-      }
+      if (!messageContent) throw new Error("Intet svar fra AI.");
 
       const rawContent = messageContent.trim().replace(/```json|```/g, "");
       const parsedItem = JSON.parse(rawContent);
 
-      scanStatus.innerText = `✅ AI fandt: ${parsedItem.brand || 'Tøj'} (${parsedItem.subCategory || 'Løbetøj'}). Gemmer...`;
+      scanStatus.innerText = `✅ Gemmer ${parsedItem.brand || 'tøj'} i klædeskabet...`;
 
       if (supabaseClient) {
-        // Eksplicit inkludering af user_id
         const { error } = await supabaseClient.from('user_wardrobe').insert([{
           user_id: currentUser.id,
           brand: parsedItem.brand || "Ukendt",
@@ -249,22 +339,121 @@ if (cameraInput) {
         }]);
 
         if (error) throw error;
-        scanStatus.innerText = `🎉 Gemt! ${parsedItem.brand || 'Tøjet'} ligger nu i dit klædeskab.`;
+        scanStatus.innerText = `🎉 Tilføjet: ${parsedItem.brand || 'Tøjet'} ligger nu i klædeskabet!`;
         loadWardrobe();
       }
 
     } catch (err) {
-      console.error("AI Scan fejl:", err);
-      scanStatus.innerText = "❌ Fejl under scanning: " + err.message;
+      console.error("Scan fejl:", err);
+      scanStatus.innerText = "❌ Fejl: " + err.message;
     }
   });
 }
 
-function convertToBase64(file) {
+// Hjælpefunktion der skalerer store mobilbilleder ned før upload
+function resizeAndConvertImage(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.readAsDataURL(file);
-    reader.onload = () => resolve(reader.result);
-    reader.onerror = error => reject(error);
+    reader.onload = (event) => {
+      const img = new Image();
+      img.src = event.target.result;
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        const MAX_WIDTH = 1000;
+        const MAX_HEIGHT = 1000;
+        let width = img.width;
+        let height = img.height;
+
+        if (width > height) {
+          if (width > MAX_WIDTH) {
+            height *= MAX_WIDTH / width;
+            width = MAX_WIDTH;
+          }
+        } else {
+          if (height > MAX_HEIGHT) {
+            width *= MAX_HEIGHT / height;
+            height = MAX_HEIGHT;
+          }
+        }
+
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, width, height);
+
+        // Returnerer komprimeret JPEG i base64
+        resolve(canvas.toDataURL('image/jpeg', 0.8));
+      };
+      img.onerror = (error) => reject(error);
+    };
+    reader.onerror = (error) => reject(error);
+  });
+}
+
+// === 5. QUICK FEEDBACK MED SIKRET USER_ID ===
+document.querySelectorAll('.btn-fb').forEach(button => {
+  button.addEventListener('click', async (e) => {
+    const rating = e.target.getAttribute('data-rating');
+    const statusEl = document.getElementById('fb-status');
+    const extraBox = document.getElementById('feedback-extra');
+
+    statusEl.innerText = "⏳ Gemmer din vurdering...";
+
+    try {
+      const currentUser = await ensureAuthenticated();
+      const userType = userTypeSelect ? userTypeSelect.value : 'normal';
+      const routeType = routeTypeSelect ? routeTypeSelect.value : 'standard';
+
+      const insertData = {
+        rating: rating,
+        feels_like_temp: currentRawTemp,
+        user_type: userType,
+        route_type: routeType
+      };
+
+      if (currentUser) {
+        insertData.user_id = currentUser.id;
+      }
+
+      const { data, error } = await supabaseClient
+        .from('outfit_feedback')
+        .insert([insertData])
+        .select();
+
+      if (error) throw error;
+      if (data && data[0]) lastInsertedFeedbackId = data[0].id;
+
+      statusEl.innerText = "🎉 Mange tak for din feedback!";
+      if (extraBox) extraBox.classList.remove('hidden');
+
+    } catch (err) {
+      console.error("Feedback-fejl:", err);
+      statusEl.innerText = "❌ Kunne ikke gemme feedback (tjek RLS politikker).";
+    }
+  });
+});
+
+const btnSendComment = document.getElementById('btn-send-comment');
+if (btnSendComment) {
+  btnSendComment.addEventListener('click', async () => {
+    const commentInput = document.getElementById('fb-comment');
+    const statusEl = document.getElementById('fb-status');
+    const commentText = commentInput.value.trim();
+
+    if (!commentText || !lastInsertedFeedbackId) return;
+
+    try {
+      const { error } = await supabaseClient
+        .from('outfit_feedback')
+        .update({ comment: commentText })
+        .eq('id', lastInsertedFeedbackId);
+
+      if (error) throw error;
+      statusEl.innerText = "🎉 Notat gemt!";
+      commentInput.value = "";
+    } catch (err) {
+      console.error("Notat-fejl:", err);
+    }
   });
 }
