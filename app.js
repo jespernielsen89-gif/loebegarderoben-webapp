@@ -2,458 +2,679 @@
 const SUPABASE_URL = "https://quxjukgjwvsuismbfaof.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable__8-ZIhx5r9eKFwblICJyNQ_Fexy6WA4";
 
-let supabaseClient = null;
-if (window.supabase && SUPABASE_URL && !SUPABASE_URL.includes("DIN_PROJECT_URL")) {
-  supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+// Opret databaseklienten via CDN
+const db = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+let currentWeatherData = null;
+let wardrobeData = [];
+let personalTempOffset = 0;
+
+document.addEventListener('DOMContentLoaded', () => {
+  initApp();
+});
+
+async function initApp() {
+  await fetchPersonalFeedbackOffset();
+  await loadWardrobe();
+  setupEventListeners();
+  getLocationWeather();
 }
 
-// Globale variabler
-let currentRawTemp = null;
-let currentWindSpeed = 0;
-let currentRain = 0;
-let userWardrobeItems = [];
-let lastInsertedFeedbackId = null;
+function setupEventListeners() {
+  document.getElementById('btn-location').addEventListener('click', getLocationWeather);
+  document.getElementById('btn-search-city').addEventListener('click', searchCityWeather);
+  document.getElementById('btn-generate').addEventListener('click', generateAutomaticOutfit);
+  document.getElementById('btn-wishlist').addEventListener('click', generateWishlist);
+  document.getElementById('btn-parse-garmin').addEventListener('click', handleGarminUpload);
+  document.getElementById('close-modal').addEventListener('click', () => {
+    document.getElementById('wishlist-modal').classList.add('hidden');
+  });
 
-// DOM Elements
-const btnLocation = document.getElementById('btn-location');
-const cameraInput = document.getElementById('camera-input');
-const weatherInfo = document.getElementById('weather-info');
-const outfitBox = document.getElementById('outfit-recommendation');
-const scanStatus = document.getElementById('scan-status');
-const wardrobeList = document.getElementById('wardrobe-list');
-const userTypeSelect = document.getElementById('user-type');
-const routeTypeSelect = document.getElementById('route-type');
+  document.getElementById('camera-input').addEventListener('change', handleImageUpload);
+  document.getElementById('gallery-input').addEventListener('change', handleImageUpload);
+  document.getElementById('btn-save-new-item').addEventListener('click', saveNewItemToSupabase);
 
-if (userTypeSelect) userTypeSelect.addEventListener('change', updateMatch);
-if (routeTypeSelect) routeTypeSelect.addEventListener('change', updateMatch);
-
-// === AUTHENTICATION ===
-async function ensureAuthenticated() {
-  if (!supabaseClient) return null;
-  try {
-    let { data: { session } } = await supabaseClient.auth.getSession();
-    if (!session) {
-      const { data, error } = await supabaseClient.auth.signInAnonymously();
-      if (error) {
-        console.error("Anonym login fejl:", error);
-        return null;
-      }
-      return data.user;
+  document.getElementById('saved-routes').addEventListener('change', (e) => {
+    const selectedRoute = e.target.value;
+    if (selectedRoute === 'route1') {
+      document.getElementById('route-environment').value = 'sheltered';
+      alert("Valgt: Skov- og Lætur. Rute-miljø opdateret til 'Læ / Skov'.");
+    } else if (selectedRoute === 'route2') {
+      document.getElementById('route-environment').value = 'open';
+      alert("Valgt: Kysten. Rute-miljø opdateret til 'Åbent land / Kyst'.");
     }
-    return session.user;
-  } catch (err) {
-    console.error("Auth-fejl:", err);
-    return null;
+  });
+
+  document.querySelectorAll('.filter-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+      e.target.classList.add('active');
+      filterWardrobe(e.target.dataset.filter);
+    });
+  });
+
+  document.querySelectorAll('.btn-fb').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      document.querySelectorAll('.btn-fb').forEach(b => b.style.borderColor = 'var(--border)');
+      e.target.style.borderColor = 'var(--secondary)';
+      e.target.dataset.selected = "true";
+    });
+  });
+
+  document.getElementById('btn-send-fb').addEventListener('click', sendFeedback);
+}
+
+// 1. Feedback Offset (ML)
+async function fetchPersonalFeedbackOffset() {
+  try {
+    const { data } = await db
+      .from('outfit_feedback')
+      .select('rating')
+      .order('created_at', { ascending: false })
+      .limit(10);
+
+    if (!data || data.length === 0) return;
+
+    let coldCount = 0;
+    let warmCount = 0;
+    data.forEach(item => {
+      if (item.rating === 'too_cold') coldCount++;
+      if (item.rating === 'too_warm') warmCount++;
+    });
+
+    if (coldCount >= 3) personalTempOffset = -2;
+    if (warmCount >= 3) personalTempOffset = 2;
+  } catch (e) {
+    console.log("Kunne ikke hente feedback offset", e);
   }
 }
 
-document.addEventListener('DOMContentLoaded', async () => {
-  await ensureAuthenticated();
-  loadWardrobe();
-});
+// 2. Geolocation & Vejr (Fredericia fallback)
+function getLocationWeather() {
+  const cityInput = document.getElementById('city-search');
+  if (navigator.geolocation) {
+    cityInput.value = "Henter din GPS lokation...";
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        const lat = position.coords.latitude;
+        const lon = position.coords.longitude;
 
-// === 1. HENT KLÆDESKAB MED DELETE OPTION ===
-async function loadWardrobe() {
-  if (!wardrobeList || !supabaseClient) return;
+        if (lat < 0) {
+          cityInput.value = "Fredericia";
+          fetchWeather(55.5657, 9.7583);
+        } else {
+          cityInput.value = "Nuværende GPS Lokation";
+          fetchWeather(lat, lon);
+        }
+      }, 
+      () => {
+        cityInput.value = "Fredericia";
+        fetchWeather(55.5657, 9.7583);
+      },
+      { timeout: 10000, enableHighAccuracy: true }
+    );
+  } else {
+    cityInput.value = "Fredericia";
+    fetchWeather(55.5657, 9.7583);
+  }
+}
 
-  wardrobeList.innerHTML = '<p class="empty-msg">Henter tøj fra dit digitale klædeskab...</p>';
+async function searchCityWeather() {
+  const cityName = document.getElementById('city-search').value.trim();
+  if (!cityName || cityName.includes("GPS")) {
+    alert("Indtast venligst et gyldigt bynavn.");
+    return;
+  }
+  await searchCityWeatherFallback(cityName);
+}
+
+async function searchCityWeatherFallback(cityName) {
+  const geoUrl = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(cityName)}&count=1&language=da&format=json`;
 
   try {
-    const { data, error } = await supabaseClient
-      .from('user_wardrobe')
-      .select('*')
-      .order('created_at', { ascending: false });
+    const res = await fetch(geoUrl);
+    const data = await res.json();
 
-    if (error) throw error;
-    userWardrobeItems = data || [];
-
-    if (userWardrobeItems.length === 0) {
-      wardrobeList.innerHTML = '<p class="empty-msg">Dit klædeskab er tomt. Scan dit første stykke tøj ovenfor! 📸</p>';
-      if (currentRawTemp !== null) updateMatch();
+    if (!data.results || data.results.length === 0) {
+      alert("Kunne ikke finde byen.");
       return;
     }
 
-    wardrobeList.innerHTML = '';
-    userWardrobeItems.forEach(item => {
-      const card = document.createElement('div');
-      card.className = 'wardrobe-card';
-      
-      const warmthStars = '🔥'.repeat(item.warmth_level || 1);
-      const windBadge = item.windproof ? '<span class="tag tag-blue">💨 Vindtæt</span>' : '';
-      const rainBadge = item.waterproof || (item.sub_category && item.sub_category.toLowerCase().includes('regn')) ? '<span class="tag tag-blue">🌧️ Vandafvisende</span>' : '';
-
-      card.innerHTML = `
-        <div class="wardrobe-card-header">
-          <strong>${item.brand || 'Ukendt mærke'}</strong>
-          <button class="btn-delete" onclick="deleteWardrobeItem('${item.id}')">🗑️</button>
-        </div>
-        <p class="category-title">${item.sub_category || item.category || 'Tøj'}</p>
-        <div class="tags-row">
-          <span class="tag tag-orange">${warmthStars}</span>
-          ${windBadge}
-          ${rainBadge}
-        </div>
-      `;
-      wardrobeList.appendChild(card);
-    });
-
-    if (currentRawTemp !== null) updateMatch();
-
-  } catch (err) {
-    console.error("Fejl ved hentning af klædeskab:", err);
-    wardrobeList.innerHTML = '<p class="empty-msg">❌ Kunne ikke hente klædeskab.</p>';
+    const location = data.results[0];
+    document.getElementById('city-search').value = `${location.name} (${location.country || ''})`;
+    fetchWeather(location.latitude, location.longitude);
+  } catch (e) {
+    alert("Fejl ved søgning efter by.");
   }
 }
 
-async function deleteWardrobeItem(id) {
-  if (!confirm("Vil du slette dette stykke tøj fra dit klædeskab?")) return;
-  try {
-    const { error } = await supabaseClient.from('user_wardrobe').delete().eq('id', id);
-    if (error) throw error;
-    loadWardrobe();
-  } catch (err) {
-    alert("Kunne ikke slette genstanden.");
-  }
-}
-
-// === 2. AVANCERET VEJR-HENTNING ===
-if (btnLocation) {
-  btnLocation.addEventListener('click', () => {
-    if (navigator.geolocation) {
-      btnLocation.innerText = "⏳ Henter GPS og vejrdata...";
-      navigator.geolocation.getCurrentPosition(fetchWeather, (err) => {
-        alert("Kunne ikke hente din placering.");
-        btnLocation.innerText = "📍 Hent lokalt vejr via GPS";
-      });
-    } else {
-      alert("GPS understøttes ikke i denne browser.");
-    }
-  });
-}
-
-async function fetchWeather(position) {
-  const lat = position.coords.latitude;
-  const lon = position.coords.longitude;
-  const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,apparent_temperature,wind_speed_10m,rain&timezone=auto`;
+async function fetchWeather(lat, lon) {
+  const hourOffset = parseInt(document.getElementById('forecast-time').value) || 0;
+  const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&hourly=temperature_2m,apparent_temperature,precipitation_probability,wind_speed_10m,uv_index,is_day&daily=sunrise,sunset&timezone=auto`;
 
   try {
     const res = await fetch(url);
     const data = await res.json();
-    const current = data.current;
-
-    currentRawTemp = current.apparent_temperature;
-    currentWindSpeed = current.wind_speed_10m;
-    currentRain = current.rain || 0;
-
-    const tempEl = document.getElementById('temp');
-    const feelsEl = document.getElementById('feels-like');
-    const windEl = document.getElementById('wind');
-    const rainEl = document.getElementById('rain');
-
-    if (tempEl) tempEl.innerText = Math.round(current.temperature_2m);
-    if (feelsEl) feelsEl.innerText = Math.round(current.apparent_temperature);
-    if (windEl) windEl.innerText = Math.round(currentWindSpeed);
-    if (rainEl) rainEl.innerText = currentRain;
-
-    if (weatherInfo) weatherInfo.classList.remove('hidden');
-    btnLocation.innerText = "🔄 Opdater vejr";
-
-    updateMatch();
-  } catch (err) {
-    console.error("Vejrfejl:", err);
-    alert("Kunne ikke hente vejrdata.");
-  }
-}
-
-// === 3. INTELLIGENT LAG-PÅ-LAG ALGORITME MED UNIQUES (Undgår dubletter) ===
-function updateMatch() {
-  if (currentRawTemp === null) return;
-
-  let effectiveTemp = currentRawTemp;
-  const userType = userTypeSelect ? userTypeSelect.value : 'normal';
-  const routeType = routeTypeSelect ? routeTypeSelect.value : 'standard';
-
-  if (userType === 'cold') effectiveTemp -= 3;
-  else if (userType === 'warm') effectiveTemp += 3;
-
-  let needWindproof = currentWindSpeed > 7.0 || routeType === 'windy';
-  let needRainproof = currentRain > 0.1;
-
-  if (routeType === 'intense') effectiveTemp += 2;
-  else if (routeType === 'sheltered') effectiveTemp += 1;
-
-  generateOutfitMatch(effectiveTemp, needWindproof, needRainproof);
-}
-
-function generateOutfitMatch(adjustedTemp, needWindproof, needRainproof) {
-  const outfitList = document.getElementById('outfit-list');
-  if (!outfitList) return;
-  outfitList.innerHTML = '';
-
-  let targetWarmth = 3;
-  if (adjustedTemp < 0) targetWarmth = 5;
-  else if (adjustedTemp < 6) targetWarmth = 4;
-  else if (adjustedTemp < 12) targetWarmth = 3;
-  else if (adjustedTemp < 18) targetWarmth = 2;
-  else targetWarmth = 1;
-
-  // Hold styr på hvilke tøj-ID'er der allerede er brugt i outfit'et
-  let usedItemIds = new Set();
-
-  const layers = [];
-  layers.push({ layerName: 'Inderlag (Baselayer)', category: 'overdel', warmth: Math.min(targetWarmth, 3) });
-
-  if (adjustedTemp < 6) {
-    layers.push({ layerName: 'Mellemlag (Isolerende)', category: 'overdel', warmth: 4 });
-  }
-
-  if (needWindproof || needRainproof || adjustedTemp < 10) {
-    layers.push({ layerName: 'Yderlag (Beskyttelse)', category: 'overdel', needWind: needWindproof, needRain: needRainproof });
-  }
-
-  layers.push({ layerName: 'Ben / Underdel', category: 'underdel', warmth: targetWarmth });
-
-  if (adjustedTemp < 8) {
-    layers.push({ layerName: 'Tilbehør', category: 'tilbehør', warmth: targetWarmth });
-  }
-
-  layers.forEach(layer => {
-    // Sender usedItemIds med ind, så vi ikke genbruger det samme stykke tøj
-    const matchedItem = findBestMatch(layer.category, layer.warmth || targetWarmth, layer.needWind, layer.needRain, usedItemIds);
     
-    if (matchedItem) {
-      usedItemIds.add(matchedItem.id); // Lås stykke tøj så det ikke bruges igen
+    const nowIndex = new Date().getHours();
+    const targetIndex = Math.min(nowIndex + hourOffset, data.hourly.temperature_2m.length - 1);
+
+    let temp = data.hourly.temperature_2m[targetIndex];
+    let wind = data.hourly.wind_speed_10m[targetIndex];
+    const routeEnv = document.getElementById('route-environment').value;
+
+    if (routeEnv === 'open' && wind > 5) {
+      temp -= 1.5; 
     }
 
-    const card = document.createElement('div');
-    card.className = 'outfit-card';
+    const rainProb = data.hourly.precipitation_probability[targetIndex];
+    const uv = data.hourly.uv_index[targetIndex];
+    const isDay = data.hourly.is_day[targetIndex];
+    const sunsetTime = (data.daily && data.daily.sunset && data.daily.sunset[0]) 
+      ? new Date(data.daily.sunset[0]).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) 
+      : '';
 
-    if (matchedItem) {
-      card.innerHTML = `
-        <div class="outfit-card-header">
-          <span class="layer-badge">${layer.layerName}</span>
-          <span class="match-badge">⭐ Dit tøj</span>
-        </div>
-        <h4>${matchedItem.brand} - ${matchedItem.sub_category || matchedItem.category}</h4>
-        <div class="tags-row">
-          <span class="tag tag-orange">🔥 Varme ${matchedItem.warmth_level}/5</span>
-          ${matchedItem.windproof ? '<span class="tag tag-blue">💨 Vindtæt</span>' : ''}
-        </div>
-      `;
-    } else {
-      card.innerHTML = `
-        <div class="outfit-card-header">
-          <span class="layer-badge">${layer.layerName}</span>
-          <span class="match-badge fallback">💡 Forslag</span>
-        </div>
-        <h4>${getGenericFallback(layer.layerName, targetWarmth, needWindproof, needRainproof)}</h4>
-      `;
-    }
-
-    outfitList.appendChild(card);
-  });
-
-  outfitBox.classList.remove('hidden');
-}
-
-function findBestMatch(category, targetWarmth, needWind, needRain, usedItemIds) {
-  if (!userWardrobeItems || userWardrobeItems.length === 0) return null;
-
-  let candidates = userWardrobeItems.filter(item => 
-    item.category && item.category.toLowerCase().includes(category) && !usedItemIds.has(item.id)
-  );
-
-  if (candidates.length === 0) return null;
-
-  if (needWind) {
-    const windCandidates = candidates.filter(i => i.windproof);
-    if (windCandidates.length > 0) candidates = windCandidates;
-  }
-
-  candidates.sort((a, b) => {
-    const diffA = Math.abs((a.warmth_level || 3) - targetWarmth);
-    const diffB = Math.abs((b.warmth_level || 3) - targetWarmth);
-    return diffA - diffB;
-  });
-
-  return candidates[0];
-}
-
-function getGenericFallback(layerName, warmth, wind, rain) {
-  if (rain) return "Vandtæt løbejakke / Regnjakke";
-  if (wind && layerName.includes('Yderlag')) return "Vindtæt løbejakke / Vindvest";
-  if (layerName.includes('Baselayer')) {
-    return warmth >= 3 ? "Langærmet svedtransporterende undertrøje" : "Kortærmet T-shirt / Løbesinglet";
-  }
-  if (layerName.includes('Mellemlag')) return "Løbetrøje med fleece eller zip-neck";
-  if (layerName.includes('Underdel')) return warmth >= 4 ? "Vintertights med vindfront" : (warmth >= 3 ? "Lange Løbetights" : "Korte Tights / Shorts");
-  return "Løbehandsker / Pandebånd";
-}
-
-// === 4. AI CAMERA SCANNER MED BILLED-KOMPRIMERING (IPHONE FIX) ===
-if (cameraInput) {
-  cameraInput.addEventListener('change', async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-
-    scanStatus.innerText = "⏳ Behandler og komprimerer billede...";
-
-    try {
-      const currentUser = await ensureAuthenticated();
-      if (!currentUser) throw new Error("Kunne ikke godkende bruger til scanning.");
-
-      // Komprimerer og konverterer billedet, så det ikke fejler på store iPhone-filer
-      const base64Image = await resizeAndConvertImage(file);
-
-      scanStatus.innerText = "⏳ AI scanner tøjet...";
-
-      const response = await fetch(`${SUPABASE_URL}/functions/v1/bright-endpoint`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${SUPABASE_ANON_KEY}`
-        },
-        body: JSON.stringify({ imageBase64: base64Image })
-      });
-
-      const aiData = await response.json();
-      if (aiData.error) throw new Error(aiData.error.message || aiData.error);
-
-      let messageContent = aiData.choices && aiData.choices[0] ? aiData.choices[0].message.content : null;
-      if (!messageContent) throw new Error("Intet svar fra AI.");
-
-      const rawContent = messageContent.trim().replace(/```json|```/g, "");
-      const parsedItem = JSON.parse(rawContent);
-
-      scanStatus.innerText = `✅ Gemmer ${parsedItem.brand || 'tøj'} i klædeskabet...`;
-
-      if (supabaseClient) {
-        const { error } = await supabaseClient.from('user_wardrobe').insert([{
-          user_id: currentUser.id,
-          brand: parsedItem.brand || "Ukendt",
-          category: parsedItem.category || "overdel",
-          sub_category: parsedItem.subCategory || "Løbetøj",
-          warmth_level: parsedItem.warmthLevel || 3,
-          windproof: parsedItem.windproof || false,
-          visibility_reflective: parsedItem.visibilityReflective || false
-        }]);
-
-        if (error) throw error;
-        scanStatus.innerText = `🎉 Tilføjet: ${parsedItem.brand || 'Tøjet'} ligger nu i klædeskabet!`;
-        loadWardrobe();
-      }
-
-    } catch (err) {
-      console.error("Scan fejl:", err);
-      scanStatus.innerText = "❌ Fejl: " + err.message;
-    }
-  });
-}
-
-// Hjælpefunktion der skalerer store mobilbilleder ned før upload
-function resizeAndConvertImage(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.readAsDataURL(file);
-    reader.onload = (event) => {
-      const img = new Image();
-      img.src = event.target.result;
-      img.onload = () => {
-        const canvas = document.createElement('canvas');
-        const MAX_WIDTH = 1000;
-        const MAX_HEIGHT = 1000;
-        let width = img.width;
-        let height = img.height;
-
-        if (width > height) {
-          if (width > MAX_WIDTH) {
-            height *= MAX_WIDTH / width;
-            width = MAX_WIDTH;
-          }
-        } else {
-          if (height > MAX_HEIGHT) {
-            width *= MAX_HEIGHT / height;
-            height = MAX_HEIGHT;
-          }
-        }
-
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext('2d');
-        ctx.drawImage(img, 0, 0, width, height);
-
-        // Returnerer komprimeret JPEG i base64
-        resolve(canvas.toDataURL('image/jpeg', 0.8));
-      };
-      img.onerror = (error) => reject(error);
+    currentWeatherData = {
+      temp,
+      effectiveTemp: temp + personalTempOffset,
+      wind,
+      rainProb,
+      uv,
+      isDay
     };
-    reader.onerror = (error) => reject(error);
+
+    document.getElementById('weather-temp').innerText = `${Math.round(temp)}°C`;
+    document.getElementById('weather-desc').innerText = `Effektiv temp: ${Math.round(currentWeatherData.effectiveTemp)}°C`;
+    document.getElementById('weather-sub').innerText = `Vind: ${wind} m/s | Regn: ${rainProb}%`;
+
+    let badgesHtml = '';
+    if (rainProb > 30) badgesHtml += `<span class="badge rain">🌧️ Regnrisiko (${rainProb}%)</span>`;
+    if (uv >= 3 && isDay === 1) badgesHtml += `<span class="badge uv">☀️ UV Indeks ${uv}</span>`;
+    document.getElementById('weather-badges').innerHTML = badgesHtml;
+
+    if (sunsetTime) {
+      document.getElementById('sunset-text').innerText = `Solnedgang i dag kl. ${sunsetTime}`;
+      document.getElementById('sunset-box').classList.remove('hidden');
+    }
+
+    renderSmartTips(isDay, uv, wind, rainProb);
+    document.getElementById('weather-info').classList.remove('hidden');
+
+  } catch (e) {
+    alert("Fejl ved hentning af vejrdata.");
+  }
+}
+
+function renderSmartTips(isDay, uv, wind, rainProb) {
+  const tipsBox = document.getElementById('smart-tips');
+  let tips = [];
+
+  if (isDay === 0) tips.push("🔦 **Husk reflekser & pandelampe!** Turen foregår i mørke.");
+  if (uv >= 3 && isDay === 1) tips.push("☀️ **Husk solcreme & solbriller!**");
+  if (rainProb > 40) tips.push("🌧️ **Høj regnrisiko!** Vælg vandafvisende yderlag.");
+
+  if (tips.length > 0) {
+    tipsBox.innerHTML = tips.join('<br>');
+    tipsBox.classList.remove('hidden');
+  } else {
+    tipsBox.classList.add('hidden');
+  }
+}
+
+// 3. Garmin / GPX Integration
+function handleGarminUpload() {
+  const fileInput = document.getElementById('garmin-file-input');
+  if (!fileInput || fileInput.files.length === 0) {
+    alert("Vælg venligst en .gpx fil først.");
+    return;
+  }
+
+  const file = fileInput.files[0];
+  const reader = new FileReader();
+
+  reader.onload = function(e) {
+    const content = e.target.result;
+    if (file.name.toLowerCase().endsWith('.gpx')) {
+      parseGpxContent(content, file.name);
+    } else {
+      alert("Upload venligst en .gpx fil.");
+    }
+  };
+  reader.readAsText(file);
+}
+
+function calculateDistance(lat1, lon1, lat2, lon2) {
+  const R = 6371;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+            Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * 
+            Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
+
+function parseGpxContent(gpxText, fileName) {
+  try {
+    const parser = new DOMParser();
+    const xmlDoc = parser.parseFromString(gpxText, "text/xml");
+    
+    let trackPoints = xmlDoc.getElementsByTagNameNS('*', 'trkpt');
+    if (trackPoints.length === 0) trackPoints = xmlDoc.getElementsByTagName('trkpt');
+
+    if (trackPoints.length === 0) {
+      alert("Ingen punkter fundet i GPX-filen.");
+      return;
+    }
+
+    let totalDistanceKm = 0;
+    let totalElevationGain = 0;
+    let coords = [];
+    let times = [];
+    let minLat = 90, maxLat = -90, minLon = 180, maxLon = -180;
+
+    for (let i = 0; i < trackPoints.length; i++) {
+      const lat = parseFloat(trackPoints[i].getAttribute('lat'));
+      const lon = parseFloat(trackPoints[i].getAttribute('lon'));
+      
+      if (isNaN(lat) || isNaN(lon)) continue;
+
+      if (lat < minLat) minLat = lat;
+      if (lat > maxLat) maxLat = lat;
+      if (lon < minLon) minLon = lon;
+      if (lon > maxLon) maxLon = lon;
+
+      coords.push({ lat, lon });
+
+      let eleNode = trackPoints[i].getElementsByTagNameNS('*', 'ele')[0] || trackPoints[i].getElementsByTagName('ele')[0];
+      if (eleNode && i > 0) {
+        let prevEleNode = trackPoints[i-1].getElementsByTagNameNS('*', 'ele')[0] || trackPoints[i-1].getElementsByTagName('ele')[0];
+        if (prevEleNode) {
+          const diff = parseFloat(eleNode.textContent) - parseFloat(prevEleNode.textContent);
+          if (!isNaN(diff) && diff > 0) totalElevationGain += diff;
+        }
+      }
+
+      let timeNode = trackPoints[i].getElementsByTagNameNS('*', 'time')[0] || trackPoints[i].getElementsByTagName('time')[0];
+      if (timeNode && timeNode.textContent) {
+        const timeVal = new Date(timeNode.textContent).getTime();
+        if (!isNaN(timeVal)) times.push(timeVal);
+      }
+
+      if (i > 0) {
+        totalDistanceKm += calculateDistance(coords[i-1].lat, coords[i-1].lon, lat, lon);
+      }
+    }
+
+    const isCoastalRute = coords.some(pt => pt.lon > 9.7550 || pt.lat > 55.5800);
+    const envSelect = document.getElementById('route-environment');
+    envSelect.value = isCoastalRute ? 'open' : 'sheltered';
+
+    const routeTypeSelect = document.getElementById('route-type');
+    let paceMinPerKm = null;
+
+    if (times.length >= 2 && totalDistanceKm > 0) {
+      const totalSeconds = (times[times.length - 1] - times[0]) / 1000;
+      const totalMinutes = totalSeconds / 60;
+      paceMinPerKm = totalMinutes / totalDistanceKm;
+
+      if (!isNaN(paceMinPerKm) && paceMinPerKm > 0 && paceMinPerKm < 20) {
+        if (paceMinPerKm < 4.5) {
+          routeTypeSelect.value = 'tempo';
+        } else if (paceMinPerKm > 5.75) {
+          routeTypeSelect.value = 'rolig';
+        } else {
+          routeTypeSelect.value = 'almindelig';
+        }
+      }
+    }
+
+    renderRouteSvg(coords, minLat, maxLat, minLon, maxLon);
+
+    document.getElementById('g-distance').innerText = totalDistanceKm.toFixed(2);
+    document.getElementById('g-time').innerText = `${fileName} (+${Math.round(totalElevationGain)}m stigning)`;
+    document.getElementById('garmin-result').classList.remove('hidden');
+
+    if (coords.length > 0) {
+      document.getElementById('city-search').value = `Rute start (${totalDistanceKm.toFixed(1)} km)`;
+      fetchWeather(coords[0].lat, coords[0].lon);
+    }
+
+    alert(`📍 GPX Rute Indlæst (${totalDistanceKm.toFixed(2)} km)\nRute-miljø forudfyldt baseret på kystnærhed.`);
+
+  } catch (err) {
+    console.error(err);
+    alert("Fejl ved læsning af GPX-fil.");
+  }
+}
+
+function renderRouteSvg(coords, minLat, maxLat, minLon, maxLon) {
+  const svgPath = document.getElementById('route-path');
+  const summaryText = document.getElementById('route-summary-text');
+  const mapContainer = document.getElementById('route-map-container');
+
+  if (!svgPath || coords.length === 0) return;
+
+  const width = 300;
+  const height = 150;
+  const padding = 20;
+
+  const latRange = maxLat - minLat || 0.0001;
+  const lonRange = maxLon - minLon || 0.0001;
+
+  let pathString = "";
+  coords.forEach((pt, index) => {
+    const x = padding + ((pt.lon - minLon) / lonRange) * (width - 2 * padding);
+    const y = height - (padding + ((pt.lat - minLat) / latRange) * (height - 2 * padding));
+
+    if (index === 0) {
+      pathString += `M ${x} ${y} `;
+    } else {
+      pathString += `L ${x} ${y} `;
+    }
+  });
+
+  svgPath.setAttribute('d', pathString);
+  if (summaryText) summaryText.innerText = `Viser rute med ${coords.length} punkter`;
+  if (mapContainer) mapContainer.classList.remove('hidden');
+}
+
+// 4. Automatisk Outfit-Matching
+function generateAutomaticOutfit() {
+  if (!currentWeatherData) {
+    alert("Hent venligst vejret først!");
+    return;
+  }
+
+  if (!wardrobeData || wardrobeData.length === 0) {
+    alert("Henter klædeskab... Prøv igen om et øjeblik.");
+    loadWardrobe();
+    return;
+  }
+
+  const sensitivityMod = document.getElementById('sensitivity').value;
+  const routeType = document.getElementById('route-type').value;
+
+  let scoreTemp = currentWeatherData.effectiveTemp;
+  if (sensitivityMod === 'frysende') scoreTemp -= 3;
+  if (sensitivityMod === 'varm') scoreTemp += 3;
+  if (routeType === 'tempo') scoreTemp += 3;
+  if (routeType === 'rolig') scoreTemp -= 2;
+
+  const cleanWardrobe = wardrobeData.filter(i => !i.in_wash);
+
+  const baseLayer = findBestItemAny(cleanWardrobe, ['base', 'inder', 'trøje', 'langærmet', 't-shirt'], scoreTemp);
+  const midLayer = (scoreTemp < 10) ? findBestItemAny(cleanWardrobe, ['mid', 'mellem', 'fleece', 'trøje'], scoreTemp) : null;
+  const outerLayer = (scoreTemp < 5) ? findBestItemAny(cleanWardrobe, ['outer', 'jakke', 'wind', 'vest'], scoreTemp) : null;
+  const extraLayer = findBestItemAny(cleanWardrobe, ['tights', 'bukser', 'shorts', 'accessory'], scoreTemp) || { sub_category: 'Standard løbetights', warmth_level: 3 };
+
+  document.getElementById('layer-base').innerText = baseLayer ? `${baseLayer.brand || ''} ${baseLayer.sub_category} (Varmegrad: ${baseLayer.warmth_level}/5)` : 'Ingen fundet i skabet';
+  document.getElementById('layer-mid').innerText = midLayer ? `${midLayer.brand || ''} ${midLayer.sub_category} (Varmegrad: ${midLayer.warmth_level}/5)` : 'Ikke nødvendigt i dag';
+  document.getElementById('layer-outer').innerText = outerLayer ? `${outerLayer.brand || ''} ${outerLayer.sub_category} (Varmegrad: ${outerLayer.warmth_level}/5)` : 'Ikke nødvendigt i dag';
+  document.getElementById('layer-extra').innerText = `${extraLayer.brand || ''} ${extraLayer.sub_category || 'Standard løbetights'}`;
+
+  updateRunnerAvatar(baseLayer, midLayer, outerLayer);
+  document.getElementById('outfit-result').classList.remove('hidden');
+}
+
+function findBestItemAny(items, keywords, targetTemp) {
+  let filtered = items.filter(i => {
+    const text = `${i.category || ''} ${i.sub_category || ''} ${i.brand || ''}`.toLowerCase();
+    return keywords.some(kw => text.includes(kw));
+  });
+
+  if (filtered.length === 0) filtered = items;
+  if (filtered.length === 0) return null;
+
+  const idealWarmth = getIdealWarmth(targetTemp);
+
+  return filtered.reduce((prev, curr) => {
+    return Math.abs((curr.warmth_level || 3) - idealWarmth) < Math.abs((prev.warmth_level || 3) - idealWarmth) ? curr : prev;
   });
 }
 
-// === 5. QUICK FEEDBACK MED SIKRET USER_ID ===
-document.querySelectorAll('.btn-fb').forEach(button => {
-  button.addEventListener('click', async (e) => {
-    const rating = e.target.getAttribute('data-rating');
-    const statusEl = document.getElementById('fb-status');
-    const extraBox = document.getElementById('feedback-extra');
+function updateRunnerAvatar(baseLayer, midLayer, outerLayer) {
+  const torso = document.getElementById('svg-torso');
+  const hat = document.getElementById('svg-hat');
+  const container = document.getElementById('runner-avatar-container');
+  const statusText = document.getElementById('avatar-status-text');
 
-    statusEl.innerText = "⏳ Gemmer din vurdering...";
+  container.classList.remove('hidden');
+
+  if (outerLayer) {
+    torso.setAttribute('fill', '#1e3a8a');
+    statusText.innerText = `Påklædt med jakke (${outerLayer.sub_category})`;
+  } else if (midLayer) {
+    torso.setAttribute('fill', '#059669');
+    statusText.innerText = `Påklædt med mellemlag (${midLayer.sub_category})`;
+  } else if (baseLayer) {
+    torso.setAttribute('fill', '#2563eb');
+    statusText.innerText = `Påklædt i let inderlag (${baseLayer.sub_category})`;
+  }
+
+  if (outerLayer || midLayer) {
+    hat.classList.remove('hidden');
+  } else {
+    hat.classList.add('hidden');
+  }
+}
+
+function getIdealWarmth(temp) {
+  if (temp < -5) return 5;
+  if (temp < 2) return 4;
+  if (temp < 8) return 3;
+  if (temp < 15) return 2;
+  return 1;
+}
+
+// 5. Klædeskab
+async function loadWardrobe() {
+  const { data, error } = await db.from('user_wardrobe').select('*');
+  if (!error && data) {
+    wardrobeData = data;
+    renderWardrobe(wardrobeData);
+  } else {
+    console.error("Fejl ved hentning af tøj:", error);
+  }
+}
+
+function renderWardrobe(items) {
+  const list = document.getElementById('wardrobe-list');
+  if (!list) return;
+
+  if (items.length === 0) {
+    list.innerHTML = `<p class="empty-msg">Dit klædeskab er tomt eller kunne ikke hentes.</p>`;
+    return;
+  }
+
+  list.innerHTML = items.map(item => `
+    <div class="item-card ${item.in_wash ? 'in-wash' : ''}">
+      <div class="item-info">
+        <h4>${item.brand || ''} ${item.sub_category || 'Løbetøj'} ${item.in_wash ? '🧺 (Til vask)' : ''}</h4>
+        <p>Kategori: ${item.category || 'Tøj'} | Varmegrad: ${item.warmth_level || 3}/5</p>
+      </div>
+      <div class="item-actions">
+        <button class="btn outline small" onclick="toggleWash('${item.id}', ${!item.in_wash})">
+          ${item.in_wash ? '🧺 Rent' : '🧼 Til vask'}
+        </button>
+      </div>
+    </div>
+  `).join('');
+}
+
+async function toggleWash(id, status) {
+  await db.from('user_wardrobe').update({ in_wash: status }).eq('id', id);
+  await loadWardrobe();
+}
+
+function filterWardrobe(filter) {
+  if (filter === 'clean') {
+    renderWardrobe(wardrobeData.filter(i => !i.in_wash));
+  } else if (filter === 'wash') {
+    renderWardrobe(wardrobeData.filter(i => i.in_wash));
+  } else {
+    renderWardrobe(wardrobeData);
+  }
+}
+
+// 5b. Foto & Billede Upload via Supabase Edge Function (Sikker i skyen)
+async function handleImageUpload(event) {
+  const file = event.target.files && event.target.files[0];
+  if (!file) return;
+
+  const previewImg = document.getElementById('image-preview');
+  const statusEl = document.getElementById('upload-status');
+
+  const reader = new FileReader();
+
+  reader.onload = async function(e) {
+    previewImg.src = e.target.result;
+    document.getElementById('image-upload-preview-container').classList.remove('hidden');
+    
+    statusEl.innerText = "🤖 Supabase Edge Function & Gemini analyserer tøjet...";
+    statusEl.style.color = "var(--accent)";
 
     try {
-      const currentUser = await ensureAuthenticated();
-      const userType = userTypeSelect ? userTypeSelect.value : 'normal';
-      const routeType = routeTypeSelect ? routeTypeSelect.value : 'standard';
+      const base64Data = e.target.result.split(',')[1];
+      const mimeType = file.type || 'image/jpeg';
 
-      const insertData = {
-        rating: rating,
-        feels_like_temp: currentRawTemp,
-        user_type: userType,
-        route_type: routeType
-      };
+      const aiResult = await analyzeImageWithEdgeFunction(base64Data, mimeType);
 
-      if (currentUser) {
-        insertData.user_id = currentUser.id;
+      if (aiResult) {
+        if (aiResult.brand) document.getElementById('new-item-brand').value = aiResult.brand;
+        if (aiResult.category) document.getElementById('new-item-category').value = aiResult.category;
+        if (aiResult.sub_category) document.getElementById('new-item-sub-category').value = aiResult.sub_category;
+        if (aiResult.warmth_level) document.getElementById('new-item-warmth').value = aiResult.warmth_level;
+
+        statusEl.innerText = "✨ AI har udfyldt felterne for dig! Tjek og gem.";
+        statusEl.style.color = "var(--secondary)";
+      } else {
+        statusEl.innerText = "⚠️ AI kunne ikke tyde tøjet helt. Udfyld venligst manuelt.";
+        statusEl.style.color = "var(--text-muted)";
       }
-
-      const { data, error } = await supabaseClient
-        .from('outfit_feedback')
-        .insert([insertData])
-        .select();
-
-      if (error) throw error;
-      if (data && data[0]) lastInsertedFeedbackId = data[0].id;
-
-      statusEl.innerText = "🎉 Mange tak for din feedback!";
-      if (extraBox) extraBox.classList.remove('hidden');
-
     } catch (err) {
-      console.error("Feedback-fejl:", err);
-      statusEl.innerText = "❌ Kunne ikke gemme feedback (tjek RLS politikker).";
+      console.error("AI-analyse fejl:", err);
+      statusEl.innerText = "⚠️ Kunne ikke analysere automatisk. Udfyld manuelt.";
+      statusEl.style.color = "var(--text-muted)";
     }
+  };
+
+  reader.readAsDataURL(file);
+}
+
+// Kald Supabase Edge Function (Gemini nøglen opbevares 100% sikkert i skyen)
+async function analyzeImageWithEdgeFunction(base64Image, mimeType) {
+  const functionUrl = `${SUPABASE_URL}/functions/v1/analyze-clothing`;
+
+  const response = await fetch(functionUrl, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${SUPABASE_ANON_KEY}`
+    },
+    body: JSON.stringify({
+      base64Image: base64Image,
+      mimeType: mimeType
+    })
   });
-});
 
-const btnSendComment = document.getElementById('btn-send-comment');
-if (btnSendComment) {
-  btnSendComment.addEventListener('click', async () => {
-    const commentInput = document.getElementById('fb-comment');
-    const statusEl = document.getElementById('fb-status');
-    const commentText = commentInput.value.trim();
+  if (!response.ok) {
+    throw new Error(`Edge Function HTTP fejl! Status: ${response.status}`);
+  }
 
-    if (!commentText || !lastInsertedFeedbackId) return;
+  return await response.json();
+}
 
-    try {
-      const { error } = await supabaseClient
-        .from('outfit_feedback')
-        .update({ comment: commentText })
-        .eq('id', lastInsertedFeedbackId);
+async function saveNewItemToSupabase() {
+  const brand = document.getElementById('new-item-brand').value.trim() || 'Ukendt brand';
+  const category = document.getElementById('new-item-category').value;
+  const subCategory = document.getElementById('new-item-sub-category').value.trim() || 'Løbetøj';
+  const warmthLevel = parseInt(document.getElementById('new-item-warmth').value) || 3;
+  const statusEl = document.getElementById('upload-status');
 
-      if (error) throw error;
-      statusEl.innerText = "🎉 Notat gemt!";
-      commentInput.value = "";
-    } catch (err) {
-      console.error("Notat-fejl:", err);
+  statusEl.innerText = "Gemmer nyt tøj i Supabase...";
+  statusEl.style.color = "var(--text-muted)";
+
+  try {
+    const { data, error } = await db
+      .from('user_wardrobe')
+      .insert([
+        {
+          brand: brand,
+          category: category,
+          sub_category: subCategory,
+          warmth_level: warmthLevel,
+          in_wash: false
+        }
+      ]);
+
+    if (error) {
+      console.error("Fejl ved gem af tøj:", error);
+      statusEl.innerText = "❌ Fejl: Kunne ikke gemme tøjet. Tjek RLS-rettigheder.";
+      statusEl.style.color = "var(--danger)";
+    } else {
+      statusEl.innerText = "✅ Tøj blev gemt i dit klædeskab!";
+      statusEl.style.color = "var(--secondary)";
+
+      setTimeout(() => {
+        document.getElementById('image-upload-preview-container').classList.add('hidden');
+        document.getElementById('camera-input').value = '';
+        document.getElementById('gallery-input').value = '';
+      }, 1500);
+
+      await loadWardrobe();
     }
-  });
+  } catch (e) {
+    console.error("Exception:", e);
+    statusEl.innerText = "❌ Systemfejl ved gem af tøj.";
+    statusEl.style.color = "var(--danger)";
+  }
+}
+
+// 6. Feedback Indsendelse
+async function sendFeedback() {
+  const selectedBtn = document.querySelector('.btn-fb[data-selected="true"]');
+  if (!selectedBtn) {
+    alert("Vælg venligst en bedømmelse.");
+    return;
+  }
+
+  const rating = selectedBtn.dataset.rating;
+  const comment = document.getElementById('fb-comment').value;
+
+  const { error } = await db.from('outfit_feedback').insert([{
+    rating,
+    feels_like_temp: currentWeatherData ? currentWeatherData.effectiveTemp : null,
+    comment
+  }]);
+
+  const statusEl = document.getElementById('fb-status');
+  if (!error) {
+    statusEl.innerText = "Tak! Din feedback er gemt.";
+    statusEl.style.color = "var(--secondary)";
+  } else {
+    statusEl.innerText = "Fejl ved lagring.";
+    statusEl.style.color = "var(--danger)";
+  }
+}
+
+// 7. Ønskeseddel
+function generateWishlist() {
+  const suggestions = [
+    { title: "🔥 Varm Merino Uld Baselayer", reason: "Godt supplement til de koldeste måneder." },
+    { title: "🌬️ Vindtæt Løbejakke", reason: "Essentielt mod vind og kølig kystluft." }
+  ];
+
+  const container = document.getElementById('wishlist-items');
+  if (container) {
+    container.innerHTML = suggestions.map(s => `
+      <div class="wishlist-item">
+        <h5>${s.title}</h5>
+        <p>${s.reason}</p>
+      </div>
+    `).join('');
+  }
+
+  const modal = document.getElementById('wishlist-modal');
+  if (modal) modal.classList.remove('hidden');
 }
