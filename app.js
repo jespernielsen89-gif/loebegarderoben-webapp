@@ -1,8 +1,8 @@
 // === CONFIGURATION ===
 const SUPABASE_URL = "https://quxjukgjwvsuismbfaof.supabase.co";
-const SUPABASE_ANON_KEY = "sb_publishable__8-ZIhx5r9eKFwblICJyNQ_Fexy6WA4";
+const SUPABASE_ANON_KEY = "sb_publishable__8-ZIhx5r9eKFwbliCJyNQ_Fexy6WA4";
 
-// Opret databaseklienten via CDN
+// Opret Supabase-klient
 const db = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 let currentWeatherData = null;
@@ -64,7 +64,7 @@ function setupEventListeners() {
   document.getElementById('btn-send-fb').addEventListener('click', sendFeedback);
 }
 
-// 1. Feedback Offset (ML)
+// 1. Feedback Offset
 async function fetchPersonalFeedbackOffset() {
   try {
     const { data } = await db
@@ -89,7 +89,7 @@ async function fetchPersonalFeedbackOffset() {
   }
 }
 
-// 2. Geolocation & Vejr (Fredericia fallback)
+// 2. Geolocation & Vejr
 function getLocationWeather() {
   const cityInput = document.getElementById('city-search');
   if (navigator.geolocation) {
@@ -517,7 +517,7 @@ function filterWardrobe(filter) {
   }
 }
 
-// 5b. Foto & Billede Upload via Supabase Edge Function (Sikker i skyen)
+// 5b. Foto & Billede Upload via Supabase Edge Function
 async function handleImageUpload(event) {
   const file = event.target.files && event.target.files[0];
   if (!file) return;
@@ -531,7 +531,7 @@ async function handleImageUpload(event) {
     previewImg.src = e.target.result;
     document.getElementById('image-upload-preview-container').classList.remove('hidden');
     
-    statusEl.innerText = "🤖 Supabase Edge Function & Gemini analyserer tøjet...";
+    statusEl.innerText = "🤖 Gemini AI analyserer tøjet...";
     statusEl.style.color = "var(--accent)";
 
     try {
@@ -546,7 +546,7 @@ async function handleImageUpload(event) {
         if (aiResult.sub_category) document.getElementById('new-item-sub-category').value = aiResult.sub_category;
         if (aiResult.warmth_level) document.getElementById('new-item-warmth').value = aiResult.warmth_level;
 
-        statusEl.innerText = "✨ AI har udfyldt felterne for dig! Tjek og gem.";
+        statusEl.innerText = "✨ AI har udfyldt felterne automatisk! Tjek og gem.";
         statusEl.style.color = "var(--secondary)";
       } else {
         statusEl.innerText = "⚠️ AI kunne ikke tyde tøjet helt. Udfyld venligst manuelt.";
@@ -554,7 +554,7 @@ async function handleImageUpload(event) {
       }
     } catch (err) {
       console.error("AI-analyse fejl:", err);
-      statusEl.innerText = "⚠️ Kunne ikke analysere automatisk. Udfyld manuelt.";
+      statusEl.innerText = "⚠️ AI-analyse mislykkedes (tjek Edge Function). Udfyld manuelt.";
       statusEl.style.color = "var(--text-muted)";
     }
   };
@@ -562,7 +562,7 @@ async function handleImageUpload(event) {
   reader.readAsDataURL(file);
 }
 
-// Kald Supabase Edge Function (Gemini nøglen opbevares 100% sikkert i skyen)
+// Kald Supabase Edge Function
 async function analyzeImageWithEdgeFunction(base64Image, mimeType) {
   const functionUrl = `${SUPABASE_URL}/functions/v1/analyze-clothing`;
 
@@ -610,7 +610,7 @@ async function saveNewItemToSupabase() {
 
     if (error) {
       console.error("Fejl ved gem af tøj:", error);
-      statusEl.innerText = "❌ Fejl: Kunne ikke gemme tøjet. Tjek RLS-rettigheder.";
+      statusEl.innerText = "❌ Fejl: Kunne ikke gemme tøjet. Kør SQL RLS scriptet i Supabase.";
       statusEl.style.color = "var(--danger)";
     } else {
       statusEl.innerText = "✅ Tøj blev gemt i dit klædeskab!";
@@ -669,7 +669,7 @@ function generateWishlist() {
   if (container) {
     container.innerHTML = suggestions.map(s => `
       <div class="wishlist-item">
-        <h5>${s.title}</h5>
+        ##### ${s.title}
         <p>${s.reason}</p>
       </div>
     `).join('');
