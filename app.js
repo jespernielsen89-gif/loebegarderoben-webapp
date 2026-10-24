@@ -1,4 +1,4 @@
-// === CONFIGURATION (LøbeGarderoben v4.1) ===
+// === CONFIGURATION (LøbeGarderoben v4.0) ===
 const SUPABASE_URL = "https://quxjukgjwvsuismbfaof.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InF1eGp1a2dqd3ZzdWlzbWJmYW9mIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTIzMDA1ODQsImV4cCI6MjEwNzg3NjU4NH0.4gApKVJAKmsk5OUEOiob9iV0y6T_aU84HJMLcWkoM9M";
 
